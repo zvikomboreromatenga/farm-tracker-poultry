@@ -80,6 +80,9 @@ def forecast_pickup_dates():
 
     # Allocate orders in FIFO order. Each order must be fully satisfied from a single date (no split).
     for order in all_orders:
+        # do not change pickup info for already collected orders
+        if order.get('picked_up'):
+            continue
         order_qty = int(order.get('order_count', 0) or 0)
         order['pickup_date'] = None
         if order_qty <= 0:
@@ -409,6 +412,8 @@ with st.expander("🔁 Persistence"):
                 p = save_backup_zip()
                 if p:
                     st.info(f"Backup saved to {p}")
+            # ensure UI and forecasts refresh after loading data
+            st.experimental_rerun()
     # Export backup as zip of CSVs
     zip_bytes = export_data_zip()
     if zip_bytes:
@@ -545,6 +550,7 @@ with st.expander("1️⃣ Chicks Orders Module"):
     # Ensure each order has an assigned pickup_date where possible
     forecasted_orders = forecast_pickup_dates()
     st.markdown("#### Order List & Pickup Forecast")
+    st.info("Pickup dates are estimates and may change when new hatch or egg data is added; mark orders as collected to lock the pickup.")
     st.dataframe([{
         "Customer": order['name'],
         "Order Qty": order['order_count'],
@@ -678,6 +684,8 @@ with st.expander("3️⃣ Chicks Collection Module"):
             order['picked_up'] = True
             st.session_state.chicks_inventory = max(0, st.session_state.chicks_inventory - order['order_count'])
             st.success(f"{order['name']} picked up {order['order_count']} chicks")
+            # refresh forecasts/UI so pickup dates and availability update
+            st.experimental_rerun()
 
     # Chicks inventory is maintained by hatch processing and hatchery records
     st.markdown(f"**Chicks Inventory (as of today): {st.session_state.chicks_inventory}**")
@@ -717,6 +725,8 @@ with st.expander("4️⃣ Hatchery Module"):
         st.session_state.hatchery.append({"date": hatch_date, "location": location, "chicks": int(new_chicks)})
         st.session_state.chicks_inventory += int(new_chicks)
         st.success(f"Added {new_chicks} chicks from {location} on {hatch_date}")
+        # refresh app so pickup forecasts update with the new hatch data
+        st.experimental_rerun()
 
     st.markdown("#### Hatchery Record")
     st.dataframe(st.session_state.hatchery)
