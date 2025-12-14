@@ -35,31 +35,69 @@ def get_total_eggs(current_date=None):
     return eggs
 
 def forecast_pickup_dates():
-    # Orders sorted by date
-    all_orders = sorted(st.session_state.chicks_orders, key=lambda x: x['order_date'])
-    # Consider existing eggs, hatch rate, and 3-week incubation
-    agg_eggs = 0
-    plan_dates = []
+    # Orders sorted by order date (FIFO)
+    all_orders = sorted(st.session_state.chicks_orders, key=lambda x: x.get('order_date') or datetime.date.min)
     today = datetime.date.today()
-    # Estimate available batches over next few weeks
-    eggs_by_hatch_day = {}
+
+    # Build availability by date combining:
+    # - current chicks inventory (available today)
+    # - scheduled hatchery entries (future hatch dates)
+    # - incubating eggs forecast (incubation_date + 3 weeks, 85% hatch rate)
+    from collections import defaultdict
+    availability = defaultdict(int)
+    # current immediate inventory
+    try:
+        availability[today] += int(st.session_state.get('chicks_inventory', 0) or 0)
+    except Exception:
+        availability[today] += 0
+
+    # hatchery scheduled hatches
+    for h in st.session_state.get('hatchery', []):
+        d = h.get('date')
+        try:
+            if isinstance(d, str):
+                d = datetime.datetime.strptime(d, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if not isinstance(d, datetime.date):
+            continue
+        if d >= today:
+            availability[d] += int(h.get('chicks', 0) or 0)
+
+    # eggs in incubator forecast
     for incubation_date, egg_count in st.session_state.egg_inventory.items():
-        hatch_day = incubation_date + datetime.timedelta(weeks=3)
+        try:
+            hatch_day = incubation_date + datetime.timedelta(weeks=3)
+        except Exception:
+            # skip invalid keys
+            continue
         if hatch_day >= today:
             hatched_chicks = int(egg_count * 0.85)
-            eggs_by_hatch_day[hatch_day] = eggs_by_hatch_day.get(hatch_day, 0) + hatched_chicks
-    # Assign earliest available batch to each order
-    egg_stock = eggs_by_hatch_day.copy()
+            availability[hatch_day] += hatched_chicks
+
+    # Copy availability to a mutable stock map
+    stock = {d: availability[d] for d in sorted(availability.keys())}
+
+    # Allocate orders in FIFO order. Each order must be fully satisfied from a single date (no split).
     for order in all_orders:
-        for hatch_day in sorted(egg_stock.keys()):
-            if egg_stock[hatch_day] >= order['order_count']:
-                plan_dates.append(hatch_day)
-                egg_stock[hatch_day] -= order['order_count']
-                order['pickup_date'] = hatch_day
+        order_qty = int(order.get('order_count', 0) or 0)
+        order['pickup_date'] = None
+        if order_qty <= 0:
+            continue
+        # earliest allowable pickup is max(order_date, today)
+        od = order.get('order_date')
+        if not isinstance(od, datetime.date):
+            od = today
+        earliest_allowed = max(today, od)
+        # find earliest date in stock where we can fully satisfy the order
+        for d in sorted(stock.keys()):
+            if d < earliest_allowed:
+                continue
+            if stock.get(d, 0) >= order_qty:
+                stock[d] -= order_qty
+                order['pickup_date'] = d
                 break
-        else:
-            plan_dates.append(None)  # Not enough supply
-            order['pickup_date'] = None
+
     return all_orders
 
 
