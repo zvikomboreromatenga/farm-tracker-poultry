@@ -413,7 +413,7 @@ with st.expander("🔁 Persistence"):
                 if p:
                     st.info(f"Backup saved to {p}")
             # ensure UI and forecasts refresh after loading data
-            st.experimental_rerun()
+            st.rerun()
     # Export backup as zip of CSVs
     zip_bytes = export_data_zip()
     if zip_bytes:
@@ -469,7 +469,7 @@ with st.expander("🔁 Persistence"):
                     st.success(f"Moved to trash: {', '.join(moved)}")
                 for name, err in failed:
                     st.error(f"Failed to move {name}: {err}")
-                st.experimental_rerun()
+                st.rerun()
             if c2.button("Cancel"):
                 st.session_state['backups_pending_delete'] = []
                 st.info("Deletion canceled")
@@ -504,7 +504,7 @@ with st.expander("🔁 Persistence"):
                         st.error(f"Failed to restore {name}: {e}")
                 if restored:
                     st.success(f"Restored: {', '.join(restored)}")
-                    st.experimental_rerun()
+                    st.rerun()
         with col_b:
             to_purge = st.multiselect("Select to permanently delete", [t['name'] for t in trash], key='trash_purge_select')
             if st.button("Permanently Delete Selected"):
@@ -518,7 +518,7 @@ with st.expander("🔁 Persistence"):
                         st.error(f"Failed to delete {name}: {e}")
                 if purged:
                     st.success(f"Permanently deleted: {', '.join(purged)}")
-                    st.experimental_rerun()
+                    st.rerun()
         with col_c:
             if st.button("Empty Trash"):
                 confirm = st.checkbox("I understand this will permanently delete all trashed backups")
@@ -529,7 +529,7 @@ with st.expander("🔁 Persistence"):
                         except Exception:
                             pass
                     st.success("Trash emptied")
-                    st.experimental_rerun()
+                    st.rerun()
     else:
         st.info("Trash is empty")
 
@@ -685,7 +685,7 @@ with st.expander("3️⃣ Chicks Collection Module"):
             st.session_state.chicks_inventory = max(0, st.session_state.chicks_inventory - order['order_count'])
             st.success(f"{order['name']} picked up {order['order_count']} chicks")
             # refresh forecasts/UI so pickup dates and availability update
-            st.experimental_rerun()
+            st.rerun()
 
     # Chicks inventory is maintained by hatch processing and hatchery records
     st.markdown(f"**Chicks Inventory (as of today): {st.session_state.chicks_inventory}**")
