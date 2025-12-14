@@ -726,7 +726,7 @@ with st.expander("4️⃣ Hatchery Module"):
         st.session_state.chicks_inventory += int(new_chicks)
         st.success(f"Added {new_chicks} chicks from {location} on {hatch_date}")
         # refresh app so pickup forecasts update with the new hatch data
-        st.experimental_rerun()
+        st.rerun()
 
     st.markdown("#### Hatchery Record")
     st.dataframe(st.session_state.hatchery)
