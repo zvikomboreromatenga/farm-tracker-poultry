@@ -1,6 +1,12 @@
 import streamlit as st
 import datetime
 from collections import defaultdict
+import json
+import io
+import csv
+import zipfile
+import os
+import shutil
 
 # Initialize session state
 if 'egg_inventory' not in st.session_state:
@@ -82,10 +88,407 @@ def process_hatches():
         st.session_state.hatchery.append({"date": hatch_day, "location": "Auto Hatch", "chicks": hatched_chicks})
         st.session_state.processed_hatch_dates.append(incubation_date.isoformat())
 
+
+# --- Persistence helpers: Streamlit Cloud/local file ---
+DATA_PATH = ".streamlit/data.json"
+
+def save_to_local(path=DATA_PATH):
+    payload = {
+        'egg_inventory': {str(k): v for k, v in st.session_state.egg_inventory.items()},
+        'hatchery': st.session_state.hatchery,
+        'chicks_orders': [
+            {
+                'name': o.get('name'),
+                'order_count': o.get('order_count'),
+                'order_date': str(o.get('order_date')) if o.get('order_date') else None,
+                'pickup_date': str(o.get('pickup_date')) if o.get('pickup_date') else None,
+                'picked_up': bool(o.get('picked_up'))
+            } for o in st.session_state.chicks_orders
+        ],
+        'chicks_inventory': st.session_state.chicks_inventory,
+        'sales': [
+            {'type': s.get('type'), 'name': s.get('name'), 'count': s.get('count'), 'date': str(s.get('date')) if s.get('date') else None}
+            for s in st.session_state.sales
+        ],
+        'processed_hatch_dates': st.session_state.processed_hatch_dates,
+    }
+    try:
+        import os
+        os.makedirs('.streamlit', exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        st.error(f"Error saving local data: {e}")
+        return False
+
+
+def load_from_local(path=DATA_PATH):
+    try:
+        import os
+        if not os.path.exists(path):
+            return False
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+        # egg_inventory
+        st.session_state.egg_inventory = defaultdict(int)
+        for k, v in payload.get('egg_inventory', {}).items():
+            try:
+                st.session_state.egg_inventory[datetime.datetime.strptime(k, "%Y-%m-%d").date()] = int(v)
+            except Exception:
+                pass
+        # hatchery
+        st.session_state.hatchery = payload.get('hatchery', [])
+        # chicks_orders
+        st.session_state.chicks_orders = []
+        for o in payload.get('chicks_orders', []):
+            order_date = datetime.datetime.strptime(o.get('order_date'), "%Y-%m-%d").date() if o.get('order_date') else None
+            pickup_date = datetime.datetime.strptime(o.get('pickup_date'), "%Y-%m-%d").date() if o.get('pickup_date') else None
+            st.session_state.chicks_orders.append({
+                'name': o.get('name'), 'order_count': int(o.get('order_count', 0)), 'order_date': order_date, 'pickup_date': pickup_date, 'picked_up': bool(o.get('picked_up', False))
+            })
+        # chicks_inventory
+        st.session_state.chicks_inventory = int(payload.get('chicks_inventory', 0))
+        # sales
+        st.session_state.sales = []
+        for s in payload.get('sales', []):
+            date = datetime.datetime.strptime(s.get('date'), "%Y-%m-%d").date() if s.get('date') else None
+            st.session_state.sales.append({'type': s.get('type'), 'name': s.get('name'), 'count': int(s.get('count', 0)), 'date': date})
+        st.session_state.processed_hatch_dates = payload.get('processed_hatch_dates', [])
+        return True
+    except Exception as e:
+        st.error(f"Error loading local data: {e}")
+        return False
+
+
+def export_data_zip():
+    """Export current session data as a ZIP archive containing CSVs.
+    Returns bytes of the ZIP file.
+    """
+    mem = io.BytesIO()
+    try:
+        with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as z:
+            # egg_inventory.csv
+            si = io.StringIO()
+            writer = csv.writer(si)
+            writer.writerow(['date', 'eggs'])
+            for k, v in st.session_state.egg_inventory.items():
+                writer.writerow([str(k), v])
+            z.writestr('egg_inventory.csv', si.getvalue())
+
+            # hatchery.csv
+            si = io.StringIO()
+            writer = csv.writer(si)
+            writer.writerow(['date', 'location', 'chicks'])
+            for h in st.session_state.hatchery:
+                writer.writerow([str(h.get('date')), h.get('location', ''), h.get('chicks', 0)])
+            z.writestr('hatchery.csv', si.getvalue())
+
+            # chicks_orders.csv
+            si = io.StringIO()
+            writer = csv.writer(si)
+            writer.writerow(['name', 'order_count', 'order_date', 'pickup_date', 'picked_up'])
+            for o in st.session_state.chicks_orders:
+                writer.writerow([o.get('name',''), o.get('order_count',0), str(o.get('order_date') or ''), str(o.get('pickup_date') or ''), bool(o.get('picked_up', False))])
+            z.writestr('chicks_orders.csv', si.getvalue())
+
+            # sales.csv
+            si = io.StringIO()
+            writer = csv.writer(si)
+            writer.writerow(['type', 'name', 'count', 'date'])
+            for s in st.session_state.sales:
+                writer.writerow([s.get('type',''), s.get('name',''), s.get('count',0), str(s.get('date') or '')])
+            z.writestr('sales.csv', si.getvalue())
+
+            # meta.json
+            meta = {
+                'chicks_inventory': st.session_state.chicks_inventory,
+                'processed_hatch_dates': st.session_state.processed_hatch_dates,
+                'exported_at': str(datetime.date.today())
+            }
+            z.writestr('meta.json', json.dumps(meta))
+
+        mem.seek(0)
+        return mem.read()
+    except Exception as e:
+        st.error(f"Error exporting data: {e}")
+        return None
+
+
+def _ensure_backups_dir():
+    d = os.path.join('.streamlit', 'backups')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def save_backup_zip():
+    """Create a timestamped ZIP backup file under .streamlit/backups/ and return the path."""
+    try:
+        data = export_data_zip()
+        if not data:
+            return None
+        d = _ensure_backups_dir()
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'farm_backup_{ts}.zip'
+        path = os.path.join(d, filename)
+        with open(path, 'wb') as f:
+            f.write(data)
+        # Rotate old backups, keep latest 10
+        try:
+            _rotate_backups(10)
+        except Exception:
+            pass
+        return path
+    except Exception as e:
+        st.error(f"Error saving backup file: {e}")
+        return None
+
+
+def latest_backup_age_days():
+    d = os.path.join('.streamlit', 'backups')
+    if not os.path.exists(d):
+        return None
+    files = [f for f in os.listdir(d) if f.endswith('.zip')]
+    if not files:
+        return None
+    paths = [os.path.join(d, f) for f in files]
+    latest = max(paths, key=os.path.getmtime)
+    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(latest))
+    return (datetime.datetime.now() - mtime).total_seconds() / 86400.0
+
+
+def _rotate_backups(max_keep=10):
+    """Keep only the newest `max_keep` backup files in the backups directory."""
+    d = os.path.join('.streamlit', 'backups')
+    if not os.path.exists(d):
+        return
+    files = [f for f in os.listdir(d) if f.endswith('.zip')]
+    if len(files) <= max_keep:
+        return
+    paths = [os.path.join(d, f) for f in files]
+    paths_sorted = sorted(paths, key=os.path.getmtime, reverse=True)
+    # Remove older ones beyond max_keep
+    for old in paths_sorted[max_keep:]:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+
+
+def list_backups():
+    """Return a list of backups with metadata (name, path, size, mtime)."""
+    d = os.path.join('.streamlit', 'backups')
+    if not os.path.exists(d):
+        return []
+    files = [f for f in os.listdir(d) if f.endswith('.zip')]
+    rows = []
+    for f in sorted(files, reverse=True):
+        p = os.path.join(d, f)
+        try:
+            size = os.path.getsize(p)
+            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(p))
+            rows.append({
+                'name': f,
+                'path': p,
+                'size': size,
+                'mtime': mtime,
+            })
+        except Exception:
+            continue
+    return rows
+
+
+def list_trash():
+    d = os.path.join('.streamlit', 'backups', 'trash')
+    if not os.path.exists(d):
+        return []
+    files = [f for f in os.listdir(d) if f.endswith('.zip')]
+    rows = []
+    for f in sorted(files, reverse=True):
+        p = os.path.join(d, f)
+        try:
+            size = os.path.getsize(p)
+            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(p))
+            rows.append({
+                'name': f,
+                'path': p,
+                'size': size,
+                'mtime': mtime,
+            })
+        except Exception:
+            continue
+    return rows
+
 # Ensure we process any hatches that have matured since last run
 process_hatches()
 
+# Auto-backup session defaults
+if 'auto_backup_enabled' not in st.session_state:
+    st.session_state.auto_backup_enabled = False
+if 'auto_backup_days' not in st.session_state:
+    st.session_state.auto_backup_days = 1
+
+# Perform startup backup if enabled and due
+try:
+    if st.session_state.get('auto_backup_enabled'):
+        age = latest_backup_age_days()
+        if age is None or age >= float(st.session_state.get('auto_backup_days', 1)):
+            p = save_backup_zip()
+            if p:
+                st.info(f"Startup backup created: {p}")
+except Exception:
+    pass
+
 st.title('🐥 Chicken Farm Dashboard')
+
+# Persistence UI (Streamlit Cloud / local file)
+with st.expander("🔁 Persistence"):
+    st.markdown("Persist app data to Streamlit Cloud's writable filesystem (local file). This keeps data between runs on the deployed app instance.")
+    # Automatic backup controls
+    if 'auto_backup_enabled' not in st.session_state:
+        st.session_state.auto_backup_enabled = False
+    if 'auto_backup_days' not in st.session_state:
+        st.session_state.auto_backup_days = 1
+    col0, _ = st.columns([2, 3])
+    with col0:
+        st.session_state.auto_backup_enabled = st.checkbox("Enable automatic backups", value=st.session_state.auto_backup_enabled)
+        st.session_state.auto_backup_days = st.number_input("Backup interval (days)", min_value=1, step=1, value=st.session_state.auto_backup_days)
+    col1, col2 = st.columns(2)
+    if col1.button("Save to Streamlit storage"):
+        ok = save_to_local()
+        if ok:
+            st.success("Saved data to .streamlit/data.json")
+            if st.session_state.auto_backup_enabled:
+                p = save_backup_zip()
+                if p:
+                    st.info(f"Backup saved to {p}")
+    if col2.button("Load from Streamlit storage"):
+        ok = load_from_local()
+        if ok:
+            st.success("Loaded data from .streamlit/data.json")
+            # Optionally create backup after load if enabled
+            if st.session_state.auto_backup_enabled:
+                p = save_backup_zip()
+                if p:
+                    st.info(f"Backup saved to {p}")
+    # Export backup as zip of CSVs
+    zip_bytes = export_data_zip()
+    if zip_bytes:
+        st.download_button("Export backup (ZIP)", data=zip_bytes, file_name="farm_backup.zip", mime="application/zip")
+
+    # List existing backups and allow deletion
+    st.markdown("---")
+    st.markdown("**Existing Backups**")
+    backups = list_backups()
+    if not backups:
+        st.info("No backups found in .streamlit/backups/")
+    else:
+        # Display table
+        table = []
+        for b in backups:
+            table.append({
+                'File': b['name'],
+                'Size (KB)': round(b['size'] / 1024, 1),
+                'Modified': b['mtime'].strftime('%Y-%m-%d %H:%M:%S')
+            })
+        st.table(table)
+
+        names = [b['name'] for b in backups]
+        to_delete = st.multiselect("Select backups to delete", options=names)
+        if st.button("Delete selected backups"):
+            if not to_delete:
+                st.warning("Select at least one backup to delete")
+            else:
+                # store pending deletion in session to ask for confirmation
+                st.session_state['backups_pending_delete'] = to_delete
+
+        # Confirmation step: show pending deletions and require explicit confirm
+        pending = st.session_state.get('backups_pending_delete', [])
+        if pending:
+            st.warning(f"You are about to delete {len(pending)} backup(s): {', '.join(pending)}")
+            c1, c2 = st.columns(2)
+            if c1.button("Confirm delete (move to trash)"):
+                trash_dir = os.path.join('.streamlit', 'backups', 'trash')
+                os.makedirs(trash_dir, exist_ok=True)
+                moved = []
+                failed = []
+                for b in backups:
+                    if b['name'] in pending:
+                        try:
+                            dst = os.path.join(trash_dir, b['name'])
+                            shutil.move(b['path'], dst)
+                            moved.append(b['name'])
+                        except Exception as e:
+                            failed.append((b['name'], str(e)))
+                # clear pending
+                st.session_state['backups_pending_delete'] = []
+                if moved:
+                    st.success(f"Moved to trash: {', '.join(moved)}")
+                for name, err in failed:
+                    st.error(f"Failed to move {name}: {err}")
+                st.experimental_rerun()
+            if c2.button("Cancel"):
+                st.session_state['backups_pending_delete'] = []
+                st.info("Deletion canceled")
+
+    # --- Trash management UI ---
+    st.markdown("---")
+    st.subheader("Trash")
+    trash = list_trash()
+    if trash:
+        trash_table = []
+        for t in trash:
+            trash_table.append({
+                'File': t['name'],
+                'Size (KB)': round(t['size'] / 1024, 1),
+                'Modified': t['mtime'].strftime('%Y-%m-%d %H:%M:%S')
+            })
+        st.table(trash_table)
+
+        col_a, col_b, col_c = st.columns([2, 2, 2])
+        with col_a:
+            to_restore = st.multiselect("Select to restore", [t['name'] for t in trash], key='trash_restore_select')
+            if st.button("Restore Selected"):
+                restored = []
+                for name in to_restore:
+                    src = os.path.join('.streamlit', 'backups', 'trash', name)
+                    dst = os.path.join('.streamlit', 'backups', name)
+                    try:
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.move(src, dst)
+                        restored.append(name)
+                    except Exception as e:
+                        st.error(f"Failed to restore {name}: {e}")
+                if restored:
+                    st.success(f"Restored: {', '.join(restored)}")
+                    st.experimental_rerun()
+        with col_b:
+            to_purge = st.multiselect("Select to permanently delete", [t['name'] for t in trash], key='trash_purge_select')
+            if st.button("Permanently Delete Selected"):
+                purged = []
+                for name in to_purge:
+                    p = os.path.join('.streamlit', 'backups', 'trash', name)
+                    try:
+                        os.remove(p)
+                        purged.append(name)
+                    except Exception as e:
+                        st.error(f"Failed to delete {name}: {e}")
+                if purged:
+                    st.success(f"Permanently deleted: {', '.join(purged)}")
+                    st.experimental_rerun()
+        with col_c:
+            if st.button("Empty Trash"):
+                confirm = st.checkbox("I understand this will permanently delete all trashed backups")
+                if confirm:
+                    for t in trash:
+                        try:
+                            os.remove(t['path'])
+                        except Exception:
+                            pass
+                    st.success("Trash emptied")
+                    st.experimental_rerun()
+    else:
+        st.info("Trash is empty")
 
 # --- PANEL 1: Chicks Orders ---
 with st.expander("1️⃣ Chicks Orders Module"):
